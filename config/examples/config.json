@@ -1,0 +1,47 @@
+{
+  "global": {
+    "debounce_ms": 200,
+    "device_rate_limit_ms": 300,
+    "fallback_poll_interval_ms": 1000,
+    "log_level": "info",
+    "default_profile": "default"
+  },
+  "profiles": {
+    "default": {
+      "description": "fallback profile",
+      "payloads": {
+        "wooting": {
+          "profile_index": "1"
+        },
+        "logitech": {
+          "profile_index": "1",
+          "force_onboard_mode": "true"
+        }
+      }
+    },
+    "gaming": {
+      "description": "example gaming profile",
+      "payloads": {
+        "wooting": {
+          "profile_index": "2"
+        },
+        "logitech": {
+          "profile_index": "2",
+          "force_onboard_mode": "true"
+        }
+      }
+    }
+  },
+  "rules": [
+    {
+      "profile": "gaming",
+      "priority": 100,
+      "process_name": "ExampleGame.exe"
+    },
+    {
+      "profile": "default",
+      "priority": 10,
+      "window_title_regex": ".*"
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+build/
+build-*/
+*.user
+*.suo
+*.vcxproj.user
+
+# Local hardware diagnostics. These can be useful while developing on specific
+# devices, but they are not part of the public GearHub application.
+src/cli/*_probe_main.cpp
