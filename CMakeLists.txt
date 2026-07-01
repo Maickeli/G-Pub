@@ -14,6 +14,7 @@ add_library(gpub_core
     src/core/orchestrator.cpp
     src/core/platform_factory.cpp
     src/core/rules_engine.cpp
+    src/backends/corsair/corsair_status.cpp
     src/backends/logitech/logitech_backend.cpp
     src/backends/wooting/wooting_backend.cpp
 )
@@ -48,6 +49,12 @@ target_link_libraries(gpubd PRIVATE gpub_core)
 
 add_executable(gpubctl src/cli/gpubctl_main.cpp)
 target_link_libraries(gpubctl PRIVATE gpub_core)
+
+if(WIN32)
+    add_executable(gpub_tray WIN32 src/tray/gpub_tray_main.cpp)
+    target_compile_definitions(gpub_tray PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_link_libraries(gpub_tray PRIVATE gpub_core shell32 user32 gdi32)
+endif()
 
 file(GLOB GPUB_EXAMPLE_CONFIG_FILES CONFIGURE_DEPENDS
     "${CMAKE_SOURCE_DIR}/config/examples/*")

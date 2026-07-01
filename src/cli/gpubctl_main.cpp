@@ -1,5 +1,8 @@
 #include "gpub/active_window_info.h"
 #include "gpub/config_loader.h"
+#include "gpub/corsair_status.h"
+#include "gpub/logger.h"
+#include "gpub/logitech_status.h"
 #include "gpub/rules_engine.h"
 #include "gpub/text_util.h"
 
@@ -12,6 +15,9 @@ void printUsage() {
         << "Usage:\n"
         << "  gpubctl status [--config <path>]\n"
         << "  gpubctl reload [--config <path>]\n"
+        << "  gpubctl battery\n"
+        << "  gpubctl logitech-battery\n"
+        << "  gpubctl corsair-battery\n"
         << "  gpubctl test-match --exe <path> [--process <name>] [--title <title>] [--config <path>]\n";
 }
 
@@ -65,6 +71,72 @@ int main(int argc, char** argv) {
             std::cout << "Config syntax is valid: " << config_path << "\n";
             std::cout << "Daemon live-reload transport is not implemented in MVP. Restart gpubd to apply changes.\n";
             return 0;
+        }
+
+        if (command == "logitech-battery") {
+            gpub::Logger::instance().setLevel(gpub::LogLevel::Info);
+            const std::optional<gpub::DeviceBatteryInfo> battery =
+                gpub::queryLogitechMouseBattery(gpub::Logger::instance());
+            if (!battery.has_value()) {
+                std::cout << "Logitech mouse battery: unavailable\n";
+                return 2;
+            }
+
+            std::cout << gpub::formatBatterySummary(*battery) << "\n";
+            std::cout << "source=" << battery->source_feature << "\n";
+            std::cout << "pid=0x" << std::hex << std::uppercase << battery->product_id << std::dec << "\n";
+            std::cout << "device_index=0x" << std::hex << std::uppercase
+                      << static_cast<int>(battery->device_index) << std::dec << "\n";
+            if (!battery->product_name.empty()) {
+                std::cout << "product=\"" << battery->product_name << "\"\n";
+            }
+            if (battery->voltage_mv.has_value()) {
+                std::cout << "voltage_mv=" << *battery->voltage_mv << "\n";
+            }
+            return 0;
+        }
+
+        if (command == "corsair-battery") {
+            gpub::Logger::instance().setLevel(gpub::LogLevel::Info);
+            const std::optional<gpub::DeviceBatteryInfo> battery =
+                gpub::queryCorsairHeadsetBattery(gpub::Logger::instance());
+            if (!battery.has_value()) {
+                std::cout << "Corsair headset battery: unavailable\n";
+                return 2;
+            }
+
+            std::cout << gpub::formatCorsairBatterySummary(*battery) << "\n";
+            std::cout << "source=" << battery->source_feature << "\n";
+            std::cout << "pid=0x" << std::hex << std::uppercase << battery->product_id << std::dec << "\n";
+            if (!battery->product_name.empty()) {
+                std::cout << "product=\"" << battery->product_name << "\"\n";
+            }
+            return 0;
+        }
+
+        if (command == "battery") {
+            gpub::Logger::instance().setLevel(gpub::LogLevel::Error);
+            bool any_available = false;
+
+            const std::optional<gpub::DeviceBatteryInfo> logitech_battery =
+                gpub::queryLogitechMouseBattery(gpub::Logger::instance());
+            if (logitech_battery.has_value()) {
+                any_available = true;
+                std::cout << gpub::formatBatterySummary(*logitech_battery) << "\n";
+            } else {
+                std::cout << "Logitech mouse battery: unavailable\n";
+            }
+
+            const std::optional<gpub::DeviceBatteryInfo> corsair_battery =
+                gpub::queryCorsairHeadsetBattery(gpub::Logger::instance());
+            if (corsair_battery.has_value()) {
+                any_available = true;
+                std::cout << gpub::formatCorsairBatterySummary(*corsair_battery) << "\n";
+            } else {
+                std::cout << "Corsair headset battery: unavailable\n";
+            }
+
+            return any_available ? 0 : 2;
         }
 
         if (command == "test-match") {

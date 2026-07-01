@@ -2,6 +2,7 @@
 
 #include "gpub/idevice_backend.h"
 #include "gpub/logger.h"
+#include "gpub/logitech_status.h"
 
 #include <chrono>
 #include <cstdint>
@@ -24,6 +25,7 @@ public:
 
     std::string id() const override;
     bool available() const override;
+    std::optional<DeviceBatteryInfo> queryBattery();
     void applyProfile(const std::string& profile_name, const DeviceProfilePayload& payload) override;
     std::vector<std::string> validate(const DeviceProfilePayload& payload) const override;
 
@@ -53,6 +55,11 @@ private:
     bool queryOnboardModeLocked(bool* out_onboard_enabled);
     bool setOnboardModeLocked(bool enabled);
     bool readOnboardInfoLocked(std::uint8_t* out_num_profiles);
+    bool queryBatteryLocked(DeviceBatteryInfo* out_info);
+    bool queryBatteryAtIndexLocked(std::uint8_t device_index, DeviceBatteryInfo* out_info);
+    bool queryUnifiedBatteryLocked(DeviceBatteryInfo* out_info);
+    bool queryBatteryStatusLocked(DeviceBatteryInfo* out_info);
+    bool queryBatteryVoltageLocked(DeviceBatteryInfo* out_info);
 
     bool callFeatureLocked(
         std::uint16_t feature_id,

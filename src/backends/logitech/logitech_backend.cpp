@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <cmath>
 #include <iomanip>
 #include <sstream>
 #include <thread>
@@ -24,6 +25,9 @@ namespace {
 
 constexpr std::uint16_t kLogitechVendorId = 0x046D;
 constexpr std::uint16_t kFeatureRoot = 0x0000;
+constexpr std::uint16_t kFeatureBatteryStatus = 0x1000;
+constexpr std::uint16_t kFeatureBatteryVoltage = 0x1001;
+constexpr std::uint16_t kFeatureUnifiedBattery = 0x1004;
 constexpr std::uint16_t kFeatureOnboardProfile = 0x8100;
 
 constexpr std::uint8_t kHidppLongReportId = 0x11;
@@ -34,6 +38,8 @@ constexpr DWORD kIoTimeoutMs = 700;
 constexpr int kReadMatchAttempts = 2;
 
 constexpr std::uint8_t kRootFunctionFindFeature = 0;
+constexpr std::uint8_t kBatteryFunctionGetStatus = 0;
+constexpr std::uint8_t kUnifiedBatteryFunctionGetStatus = 1;
 constexpr std::uint8_t kOnboardFunctionGetInfo = 0;
 constexpr std::uint8_t kOnboardFunctionSetMode = 1;
 constexpr std::uint8_t kOnboardFunctionGetMode = 2;
@@ -54,6 +60,37 @@ struct HidCandidate {
     std::uint16_t output_len{0};
     int score{0};
 };
+
+int batteryCandidateScore(const HidCandidate& candidate) {
+    int score = candidate.score;
+
+    if (candidate.pid == 0xC54D) {
+        score += 100;
+    }
+    if (candidate.product_name_lower.find("lightspeed") != std::string::npos) {
+        score += 80;
+    }
+    if (candidate.product_name_lower.find("receiver") != std::string::npos) {
+        score += 20;
+    }
+    if (candidate.usage_page >= 0xFF00) {
+        score += 10;
+    }
+
+    return score;
+}
+
+bool isBatteryReceiverLike(const HidCandidate& candidate) {
+    return candidate.pid == 0xC54D ||
+        candidate.product_name_lower.find("lightspeed") != std::string::npos ||
+        candidate.product_name_lower.find("receiver") != std::string::npos;
+}
+
+bool isBatteryReceiverLike(std::uint16_t pid, const std::string& product_name_lower) {
+    return pid == 0xC54D ||
+        product_name_lower.find("lightspeed") != std::string::npos ||
+        product_name_lower.find("receiver") != std::string::npos;
+}
 
 std::string utf16ToUtf8(const std::wstring& value) {
     if (value.empty()) {
@@ -127,6 +164,100 @@ std::string formatWin32Error(DWORD error) {
     std::ostringstream out;
     out << "0x" << std::hex << std::uppercase << error << std::dec;
     return out.str();
+}
+
+std::string batteryStatusToString(std::uint8_t status) {
+    switch (status) {
+    case 0x00:
+        return "discharging";
+    case 0x01:
+        return "charging";
+    case 0x02:
+        return "almost full";
+    case 0x03:
+        return "full";
+    case 0x04:
+        return "slow charging";
+    case 0x05:
+        return "invalid battery";
+    case 0x06:
+        return "thermal error";
+    default:
+        return "unknown";
+    }
+}
+
+int approximateUnifiedBatteryLevel(std::uint8_t level) {
+    switch (level) {
+    case 8:
+        return 90;
+    case 4:
+        return 50;
+    case 2:
+        return 20;
+    case 1:
+        return 5;
+    default:
+        return 0;
+    }
+}
+
+std::string unifiedBatteryLevelLabel(std::uint8_t level) {
+    switch (level) {
+    case 8:
+        return "full";
+    case 4:
+        return "good";
+    case 2:
+        return "low";
+    case 1:
+        return "critical";
+    default:
+        return "empty";
+    }
+}
+
+int estimateBatteryPercentageFromMillivolts(std::uint16_t millivolts) {
+    struct Point {
+        int millivolts;
+        int percentage;
+    };
+
+    constexpr std::array<Point, 13> curve = {{
+        {4186, 100},
+        {4067, 90},
+        {3989, 80},
+        {3922, 70},
+        {3859, 60},
+        {3811, 50},
+        {3778, 40},
+        {3751, 30},
+        {3717, 20},
+        {3671, 10},
+        {3646, 5},
+        {3579, 2},
+        {3500, 0},
+    }};
+
+    if (millivolts >= curve.front().millivolts) {
+        return curve.front().percentage;
+    }
+    if (millivolts <= curve.back().millivolts) {
+        return curve.back().percentage;
+    }
+
+    for (std::size_t i = 0; i + 1 < curve.size(); ++i) {
+        const Point high = curve[i];
+        const Point low = curve[i + 1];
+        if (millivolts <= high.millivolts && millivolts >= low.millivolts) {
+            const double fraction =
+                static_cast<double>(millivolts - low.millivolts) /
+                static_cast<double>(high.millivolts - low.millivolts);
+            return static_cast<int>(std::lround(low.percentage + fraction * (high.percentage - low.percentage)));
+        }
+    }
+
+    return 0;
 }
 
 bool queryHidCaps(HANDLE handle, HIDP_CAPS* out_caps) {
@@ -272,6 +403,89 @@ bool LogitechBackend::available() const {
     return const_cast<LogitechBackend*>(this)->ensureConnectedLocked(selection, false);
 #else
     return false;
+#endif
+}
+
+std::optional<DeviceBatteryInfo> LogitechBackend::queryBattery() {
+#if !defined(_WIN32)
+    logger_.warn("Logitech battery status is only implemented on Windows.");
+    return std::nullopt;
+#else
+    std::lock_guard<std::mutex> guard(lock_);
+
+    if (device_handle_ != INVALID_HANDLE_VALUE) {
+        DeviceBatteryInfo info{};
+        if (active_device_index_valid_ && queryBatteryAtIndexLocked(active_device_index_, &info)) {
+            return info;
+        }
+        closeDeviceLocked();
+    }
+
+    std::vector<HidCandidate> candidates = enumerateLogitechCandidates();
+    std::stable_sort(candidates.begin(), candidates.end(), [](const HidCandidate& lhs, const HidCandidate& rhs) {
+        return batteryCandidateScore(lhs) > batteryCandidateScore(rhs);
+    });
+    auto open_candidate = [this](const HidCandidate& candidate) {
+        if (!openDevicePathLocked(
+                candidate.path_utf16,
+                candidate.path_utf8,
+                candidate.pid,
+                candidate.product_name_lower,
+                candidate.input_len,
+                candidate.output_len)) {
+            return false;
+        }
+
+        std::ostringstream message;
+        message << "Logitech HID++ battery probe: pid=0x" << std::hex << std::uppercase << candidate.pid
+                << std::dec
+                << " usage_page=0x" << std::hex << std::uppercase << candidate.usage_page
+                << std::dec
+                << " input_len=" << candidate.input_len
+                << " output_len=" << candidate.output_len
+                << " product=\"" << candidate.product_name_lower << "\".";
+        logger_.info(message.str());
+        return true;
+    };
+
+    auto probe_candidate_index = [&](const HidCandidate& candidate, std::uint8_t device_index, DeviceBatteryInfo* info) {
+        if (!open_candidate(candidate)) {
+            return false;
+        }
+        return queryBatteryAtIndexLocked(device_index, info);
+    };
+
+    for (const HidCandidate& candidate : candidates) {
+        DeviceBatteryInfo info{};
+        const std::uint8_t likely_index = isBatteryReceiverLike(candidate) ? 1 : 0xFF;
+        if (probe_candidate_index(candidate, likely_index, &info)) {
+            return info;
+        }
+    }
+
+    for (const HidCandidate& candidate : candidates) {
+        const std::array<std::uint8_t, 7> fallback_receiver_indices = {2, 3, 4, 5, 6, 0xFF, 0x00};
+        const std::array<std::uint8_t, 7> fallback_direct_indices = {0x00, 1, 2, 3, 4, 5, 6};
+        const auto& fallback_indices = isBatteryReceiverLike(candidate)
+            ? fallback_receiver_indices
+            : fallback_direct_indices;
+
+        for (std::uint8_t index : fallback_indices) {
+            DeviceBatteryInfo info{};
+            if (probe_candidate_index(candidate, index, &info)) {
+                return info;
+            }
+            if (last_error_ == WAIT_TIMEOUT && isBatteryReceiverLike(candidate)) {
+                break;
+            }
+        }
+    }
+
+    logger_.warn(
+        "Logitech battery query failed; op=" + last_operation_ +
+        " error=" + formatWin32Error(last_error_) + ".");
+    closeDeviceLocked();
+    return std::nullopt;
 #endif
 }
 
@@ -665,6 +879,164 @@ bool LogitechBackend::readOnboardInfoLocked(std::uint8_t* out_num_profiles) {
     return true;
 }
 
+bool LogitechBackend::queryBatteryLocked(DeviceBatteryInfo* out_info) {
+    if (active_device_index_valid_ && queryBatteryAtIndexLocked(active_device_index_, out_info)) {
+        return true;
+    }
+
+    const bool receiver_like = isBatteryReceiverLike(device_pid_, product_name_lower_);
+    const std::array<std::uint8_t, 8> receiver_probe_indices = {1, 2, 3, 4, 5, 6, 0xFF, 0x00};
+    const std::array<std::uint8_t, 8> direct_probe_indices = {0xFF, 0x00, 1, 2, 3, 4, 5, 6};
+    const auto& probe_indices = receiver_like ? receiver_probe_indices : direct_probe_indices;
+
+    for (std::uint8_t index : probe_indices) {
+        if (active_device_index_valid_ && active_device_index_ == index) {
+            continue;
+        }
+        if (queryBatteryAtIndexLocked(index, out_info)) {
+            std::ostringstream message;
+            message << "Logitech battery device index auto-detected: 0x"
+                    << std::hex << std::uppercase << static_cast<int>(index) << std::dec << ".";
+            logger_.info(message.str());
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool LogitechBackend::queryBatteryAtIndexLocked(std::uint8_t device_index, DeviceBatteryInfo* out_info) {
+    active_device_index_ = device_index;
+    active_device_index_valid_ = true;
+    feature_index_cache_.clear();
+    feature_index_cache_.emplace(kFeatureRoot, static_cast<std::uint8_t>(0));
+
+    if (queryUnifiedBatteryLocked(out_info)) {
+        out_info->product_id = device_pid_;
+        out_info->product_name = product_name_lower_;
+        out_info->device_index = device_index;
+        return true;
+    }
+    if (last_error_ == WAIT_TIMEOUT) {
+        return false;
+    }
+    if (queryBatteryStatusLocked(out_info)) {
+        out_info->product_id = device_pid_;
+        out_info->product_name = product_name_lower_;
+        out_info->device_index = device_index;
+        return true;
+    }
+    if (last_error_ == WAIT_TIMEOUT) {
+        return false;
+    }
+    if (queryBatteryVoltageLocked(out_info)) {
+        out_info->product_id = device_pid_;
+        out_info->product_name = product_name_lower_;
+        out_info->device_index = device_index;
+        return true;
+    }
+
+    return false;
+}
+
+bool LogitechBackend::queryUnifiedBatteryLocked(DeviceBatteryInfo* out_info) {
+    std::vector<std::uint8_t> response;
+    if (!callFeatureLocked(
+            kFeatureUnifiedBattery,
+            kUnifiedBatteryFunctionGetStatus,
+            std::span<const std::uint8_t>{},
+            &response)) {
+        last_operation_ = "query_unified_battery";
+        return false;
+    }
+    if (response.size() <= 7) {
+        last_error_ = ERROR_INVALID_DATA;
+        last_operation_ = "parse_unified_battery";
+        return false;
+    }
+
+    const std::uint8_t percentage = response[4];
+    const std::uint8_t level = response[5];
+    const std::uint8_t status = response[6];
+
+    out_info->percentage = (percentage != 0)
+        ? static_cast<int>(percentage)
+        : approximateUnifiedBatteryLevel(level);
+    out_info->approximate = (percentage == 0);
+    out_info->level_label = unifiedBatteryLevelLabel(level);
+    out_info->status = batteryStatusToString(status);
+    out_info->source_feature = "unified battery (0x1004)";
+    out_info->voltage_mv.reset();
+    return true;
+}
+
+bool LogitechBackend::queryBatteryStatusLocked(DeviceBatteryInfo* out_info) {
+    std::vector<std::uint8_t> response;
+    if (!callFeatureLocked(
+            kFeatureBatteryStatus,
+            kBatteryFunctionGetStatus,
+            std::span<const std::uint8_t>{},
+            &response)) {
+        last_operation_ = "query_battery_status";
+        return false;
+    }
+    if (response.size() <= 6) {
+        last_error_ = ERROR_INVALID_DATA;
+        last_operation_ = "parse_battery_status";
+        return false;
+    }
+
+    const std::uint8_t percentage = response[4];
+    const std::uint8_t next_percentage = response[5];
+    const std::uint8_t status = response[6];
+
+    if (percentage != 0) {
+        out_info->percentage = static_cast<int>(percentage);
+        out_info->approximate = false;
+    } else if (next_percentage != 0) {
+        out_info->percentage = static_cast<int>(next_percentage);
+        out_info->approximate = true;
+    } else {
+        out_info->percentage.reset();
+        out_info->approximate = true;
+    }
+
+    out_info->level_label.clear();
+    out_info->status = batteryStatusToString(status);
+    out_info->source_feature = "battery status (0x1000)";
+    out_info->voltage_mv.reset();
+    return true;
+}
+
+bool LogitechBackend::queryBatteryVoltageLocked(DeviceBatteryInfo* out_info) {
+    std::vector<std::uint8_t> response;
+    if (!callFeatureLocked(
+            kFeatureBatteryVoltage,
+            kBatteryFunctionGetStatus,
+            std::span<const std::uint8_t>{},
+            &response)) {
+        last_operation_ = "query_battery_voltage";
+        return false;
+    }
+    if (response.size() <= 6) {
+        last_error_ = ERROR_INVALID_DATA;
+        last_operation_ = "parse_battery_voltage";
+        return false;
+    }
+
+    const std::uint16_t millivolts =
+        static_cast<std::uint16_t>((response[4] << 8) | response[5]);
+    const std::uint8_t flags = response[6];
+
+    out_info->percentage = estimateBatteryPercentageFromMillivolts(millivolts);
+    out_info->approximate = true;
+    out_info->level_label.clear();
+    out_info->status = (flags & 0x80) ? "charging" : "discharging";
+    out_info->source_feature = "battery voltage (0x1001)";
+    out_info->voltage_mv = millivolts;
+    return true;
+}
+
 bool LogitechBackend::callFeatureLocked(
     std::uint16_t feature_id,
     std::uint8_t function_id,
@@ -874,6 +1246,15 @@ bool LogitechBackend::readMatchingReportLocked(
             *out_error = ERROR_SUCCESS;
             return true;
         }
+        if (response[0] == request_header[0] &&
+            response[1] == request_header[1] &&
+            response[2] == 0xFF &&
+            response.size() > 5 &&
+            response[3] == request_header[2] &&
+            response[4] == request_header[3]) {
+            *out_error = (response[5] == 0x09) ? ERROR_NOT_SUPPORTED : ERROR_INVALID_DATA;
+            return false;
+        }
     }
     *out_error = (last_read_error == ERROR_SUCCESS) ? WAIT_TIMEOUT : last_read_error;
     return false;
@@ -941,5 +1322,30 @@ void LogitechBackend::logLegacyPayload(const std::string& profile_name, const De
     logger_.info(message.str());
 }
 #endif
+
+std::optional<DeviceBatteryInfo> queryLogitechMouseBattery(Logger& logger) {
+    static LogitechBackend backend(logger);
+    return backend.queryBattery();
+}
+
+std::string formatBatterySummary(const DeviceBatteryInfo& info) {
+    std::ostringstream out;
+    out << "Logitech mouse battery: ";
+    if (info.percentage.has_value()) {
+        if (info.approximate) {
+            out << "~";
+        }
+        out << *info.percentage << "%";
+    } else if (!info.level_label.empty()) {
+        out << info.level_label;
+    } else {
+        out << "unknown";
+    }
+
+    if (!info.status.empty()) {
+        out << " (" << info.status << ")";
+    }
+    return out.str();
+}
 
 } // namespace gpub

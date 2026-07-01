@@ -19,11 +19,23 @@
         }
       }
     },
-    "gaming": {
-      "description": "example gaming profile",
+    "valorant": {
+      "description": "valorant profile",
       "payloads": {
         "wooting": {
           "profile_index": "2"
+        },
+        "logitech": {
+          "profile_index": "2",
+          "force_onboard_mode": "true"
+        }
+      }
+    },
+    "cs2": {
+      "description": "counter-strike 2 profile",
+      "payloads": {
+        "wooting": {
+          "profile_index": "3"
         },
         "logitech": {
           "profile_index": "2",
@@ -34,9 +46,14 @@
   },
   "rules": [
     {
-      "profile": "gaming",
+      "profile": "cs2",
       "priority": 100,
-      "process_name": "ExampleGame.exe"
+      "process_name": "cs2.exe"
+    },
+    {
+      "profile": "valorant",
+      "priority": 100,
+      "process_name": "VALORANT-Win64-Shipping.exe"
     },
     {
       "profile": "default",

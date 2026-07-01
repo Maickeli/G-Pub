@@ -8,7 +8,7 @@ Right now GPub automatically switches keyboard/mouse profiles when the active ap
 - Automatic profile switching from foreground-window rules.
 - Wooting keyboard profile switching over HID.
 - Logitech HID++ onboard mouse profile switching.
-- CLI/daemon workflow while the tray UI does not exist yet.
+- Tray battery status for Logitech mice and Corsair wireless headsets.
 
 ## Later
 - Tray app with quick manual profile switching.
@@ -19,7 +19,7 @@ Right now GPub automatically switches keyboard/mouse profiles when the active ap
 ## Project Layout
 - `include/gpub/`: core interfaces and data models.
 - `src/core/`: config loading, rules, orchestration, and factories.
-- `src/backends/`: device backends for Wooting HID and Logitech HID++.
+- `src/backends/`: device backends for Wooting HID, Logitech HID++, and Corsair headset status.
 - `src/platform/windows/`: foreground-window detection via Win32.
 - `src/cli/`: daemon and control CLI.
 - `config/examples/`: sample runtime configuration.
@@ -28,6 +28,7 @@ Right now GPub automatically switches keyboard/mouse profiles when the active ap
 ## Binaries
 - `gpubd`: background daemon process.
 - `gpubctl`: CLI helper (`status`, `reload` validation stub, `test-match`).
+- `gpub_tray`: Windows tray app showing Logitech mouse and Corsair headset battery status.
 
 ## Build (Visual Studio generator)
 ```bat
@@ -51,6 +52,11 @@ Run detached in background (no terminal output/window):
 .\build\Release\gpubd.exe --config config\examples\config.json --background --quiet
 ```
 
+Run the tray app:
+```bat
+.\build\Release\gpub_tray.exe
+```
+
 Example config behavior:
 - `ExampleGame.exe` focused -> Wooting profile slot `2`
 - `ExampleGame.exe` focused -> Logitech onboard slot `2`
@@ -69,6 +75,6 @@ See:
 - `docs/LOGITECH_PROTOCOL.md`
 
 ## Dependency Notes
-GPub does not vendor Python tooling or upstream Wooting/Logitech repositories.
+GPub does not vendor Python tooling or upstream Wooting/Logitech/Corsair repositories.
 The active Wooting code lives in `src/backends/wooting/`.
 Protocol findings from upstream projects are captured as concise notes in `docs/`.
